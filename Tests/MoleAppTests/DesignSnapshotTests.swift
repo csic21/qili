@@ -362,13 +362,16 @@ final class DesignSnapshotTests: XCTestCase {
                 status: index == 0 ? .moved : (index == 1 ? .failed : .retained),
                 detail: index == 0 ? "已移到废纸篓" : (index == 1 ? "没有访问权限，请在访达中处理" : "未选择或只读，已保留"))
         }, remaining: Array(items.dropFirst()).map(\.id))
+        // The sheet has a fixed 760×660 content area; native titlebar height varies by OS.
+        let sheetFrameSize = NSWindow.frameRect(forContentRect: NSRect(x: 0, y: 0, width: 760, height: 660),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable]).size
         for result in [nil, partial] as [UninstallResult?] {
             let store = AppsStore(snapshot: .init(apps: [app], uninstallPlan: plan, uninstallResult: result))
             XCTAssertFalse(store.allowsLiveOperations)
             let view = AppUninstallView(store: store, app: app)
                 .environment(\.locale, Locale(identifier: "zh_CN"))
                 .environment(\.colorScheme, .dark)
-            _ = try capture(view, size: NSSize(width: 760, height: 692), scrollToBottom: false,
+            _ = try capture(view, size: sheetFrameSize, scrollToBottom: false,
                 to: output.appendingPathComponent(result == nil ? "uninstall-review.png" : "uninstall-partial.png"))
         }
     }
