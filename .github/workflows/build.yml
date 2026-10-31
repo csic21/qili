@@ -23,12 +23,20 @@ jobs:
       - name: Capture native design states
         run: bash scripts/capture_design_snapshots.sh
 
+      - name: Capture uninstall review states
+        env:
+          QILI_CAPTURE_UNINSTALL: '1'
+          QILI_SNAPSHOT_DIRECTORY: ${{ github.workspace }}/.build/uninstall-snapshots
+        run: swift test --filter DesignSnapshotTests.testCaptureUninstallSnapshots
+
       - name: Upload native design captures
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: Qili-design-snapshots
-          path: .build/design-snapshots/
+          path: |
+            .build/design-snapshots/
+            .build/uninstall-snapshots/
           if-no-files-found: warn
           retention-days: 7
 

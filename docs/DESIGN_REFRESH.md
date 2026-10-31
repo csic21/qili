@@ -67,8 +67,14 @@ Finder and folder-panel actions are inert, with isolated view preferences for fi
 Both cleanup modes revalidate the same paths and process only checked children.
 
 There is no empty-Trash action — the app moves items to Trash but never empties it — and no
-app uninstall, file-map deletion, speculative metric,
-or new network service. Maintenance retains the existing selections and authorization.
+file-map deletion, speculative metric, or new network service.
+App inventory now offers a separate uninstall review sheet with a fixed selection bar,
+a second confirmation, graceful app termination, per-item outcomes and a recheck of known paths.
+Only exact user-library paths and verified in-app user LaunchAgents can be moved; system agents
+are read-only. Data directories require explicit selection and acknowledgement. Identity and
+symlink checks run again before moving; failure to move the app preserves its data. Shared
+bundle-ID paths stay read-only when another installed copy exists. Uninstall snapshots use
+inert `/QiliPreview` fixtures, and filesystem tests use an injected simulated Trash. Maintenance retains the existing selections and authorization.
 The test renderer never constructs the live ContentView or launches the app entry point.
 
 ## Verification
@@ -126,3 +132,10 @@ Manual acceptance checklist:
   update/startup subpages, native controls and unavailable hardware readings.
 - Verify live operations only on disposable, explicitly authorized test fixtures. Do
   not use real cleanup, uninstall, update or maintenance operations for screenshot QA.
+
+Uninstall sheet snapshots (review and partial result) can be rendered separately:
+
+```sh
+QILI_CAPTURE_UNINSTALL=1 QILI_SNAPSHOT_DIRECTORY="$PWD/.build/uninstall-snapshots" \
+  swift test --filter DesignSnapshotTests.testCaptureUninstallSnapshots
+```

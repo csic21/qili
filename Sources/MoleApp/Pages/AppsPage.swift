@@ -15,6 +15,7 @@ struct AppsPage: View {
     @State private var leftoverCache: [String: [LeftoverItem]] = [:]
     @State private var pendingEntry: LoginEntry?
     @State private var showConfirm = false
+    @State private var uninstallApp: ScannedApp?
 
     init(store: AppsStore, loginStore: LoginItemsStore, updateStore: UpdateStore) {
         self.store = store
@@ -75,7 +76,13 @@ struct AppsPage: View {
                 store.refresh()
             }
         }
+        .sheet(item: $uninstallApp) { app in
+            AppUninstallView(store: store, app: app)
+        }
         .onChange(of: store.generation) { _, _ in leftoverCache = [:]; expanded = nil }
+        .onChange(of: store.uninstalling) { _, busy in
+            if !busy && store.uninstallResult != nil && allowsLiveOperations { loginStore.scan() }
+        }
     }
 
     private var subnav: some View {
@@ -138,7 +145,13 @@ struct AppsPage: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.leading, 10)
                     .padding(.bottom, 6)
-                Notice(text: "展开应用可只读查看关联文件。此处不执行应用卸载。", symbol: "info.circle")
+                Notice(text: "展开应用查看关联文件，选择卸载后可逐项确认并移到废纸篓。", symbol: "info.circle")
+                    .padding(.bottom, 10)
+            }
+
+            if let result = store.uninstallResult {
+                Notice(text: "\(result.appName)：\(result.title)，移动 \(result.moved) 项，失败 \(result.failed) 项。废纸篓未清空。",
+                       symbol: result.failed > 0 ? "exclamationmark.circle" : "checkmark.circle")
                     .padding(.bottom, 10)
             }
 
@@ -209,7 +222,7 @@ struct AppsPage: View {
     private func expandPanel(_ app: ScannedApp) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack {
-                Text("关联文件 · 只读查看")
+                Text("关联文件")
                     .font(.system(size: 12))
                     .foregroundStyle(Theme.dim2)
                 Spacer()
@@ -218,6 +231,14 @@ struct AppsPage: View {
                     NSWorkspace.shared.activateFileViewerSelecting([app.url])
                 }
                 .buttonStyle(WorkspaceButtonStyle(kind: .quiet))
+                Button("卸载…") {
+                    guard allowsLiveOperations else { return }
+                    store.prepareUninstall(app)
+                    uninstallApp = app
+                }
+                .buttonStyle(WorkspaceButtonStyle())
+                .disabled(store.uninstalling || updateStore.busyID != nil || !loginStore.busyIDs.isEmpty)
+                .accessibilityLabel("卸载\(app.name)，先查看文件清单")
             }
             .padding(.horizontal, 12)
             .padding(.top, 8)

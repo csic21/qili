@@ -327,6 +327,53 @@ final class DesignSnapshotTests: XCTestCase {
     }
 
     @MainActor
+    func testCaptureUninstallSnapshots() throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["QILI_CAPTURE_UNINSTALL"] == "1" else {
+            throw XCTSkip("Opt in with QILI_CAPTURE_UNINSTALL=1 and QILI_SNAPSHOT_DIRECTORY.")
+        }
+        let output = URL(fileURLWithPath: try XCTUnwrap(environment["QILI_SNAPSHOT_DIRECTORY"]))
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        _ = NSApplication.shared
+        guard !NSScreen.screens.isEmpty else { throw XCTSkip("A graphical login is required") }
+        let app = ScannedApp(id: "/QiliPreview/Applications/Canvas.app",
+            url: URL(fileURLWithPath: "/QiliPreview/Applications/Canvas.app"),
+            name: "Canvas 绘图工作台", version: "1", bundleID: "org.example.canvas", modified: "")
+        let identity = UninstallIdentity(device: 0, inode: 0, birthSeconds: 0, birthNanos: 0)
+        let items = [
+            UninstallItem(url: app.url, kind: .application, title: "应用本体", note: "卸载时必须包含应用本体",
+                defaultSelected: true, requiresDataConsent: false, readOnly: false, identity: identity,
+                sizeBytes: 245_000_000, partial: false),
+            UninstallItem(url: URL(fileURLWithPath: "/QiliPreview/Library/Caches/org.example.canvas"),
+                kind: .cache, title: "缓存", note: "按应用标识精确匹配", defaultSelected: true,
+                requiresDataConsent: false, readOnly: false, identity: identity, sizeBytes: 32_000_000, partial: false),
+            UninstallItem(url: URL(fileURLWithPath: "/QiliPreview/Library/Application Support/org.example.canvas"),
+                kind: .support, title: "应用数据", note: "可能包含文稿和账号数据；默认保留", defaultSelected: false,
+                requiresDataConsent: true, readOnly: false, identity: identity, sizeBytes: 482_000_000, partial: false),
+            UninstallItem(url: URL(fileURLWithPath: "/QiliPreview/Library/LaunchDaemons/org.example.canvas.helper.plist"),
+                kind: .systemAgent, title: "系统后台项", note: "只读；请使用官方卸载器处理", defaultSelected: false,
+                requiresDataConsent: false, readOnly: true, identity: identity, sizeBytes: 4096, partial: false),
+        ]
+        let plan = UninstallPlan(app: app, items: items,
+            notes: ["仅扫描预设位置；共享群组容器、钥匙串、云端数据和其他自定义位置不自动清理。",
+                    "带驱动或系统扩展的软件请优先使用官方卸载器。"], blockedReason: nil)
+        let partial = UninstallResult(appName: app.name, outcomes: items.enumerated().map { index, item in
+            UninstallOutcome(id: item.id, title: item.title,
+                status: index == 0 ? .moved : (index == 1 ? .failed : .retained),
+                detail: index == 0 ? "已移到废纸篓" : (index == 1 ? "没有访问权限，请在访达中处理" : "未选择或只读，已保留"))
+        }, remaining: Array(items.dropFirst()).map(\.id))
+        for result in [nil, partial] as [UninstallResult?] {
+            let store = AppsStore(snapshot: .init(apps: [app], uninstallPlan: plan, uninstallResult: result))
+            XCTAssertFalse(store.allowsLiveOperations)
+            let view = AppUninstallView(store: store, app: app)
+                .environment(\.locale, Locale(identifier: "zh_CN"))
+                .environment(\.colorScheme, .dark)
+            _ = try capture(view, size: NSSize(width: 760, height: 692), scrollToBottom: false,
+                to: output.appendingPathComponent(result == nil ? "uninstall-review.png" : "uninstall-partial.png"))
+        }
+    }
+
+    @MainActor
     private func makeScenes() -> [SnapshotScene] {
         var scenes = DesignScenario.allCases.map { scenario in
             let store = scenario.makeStore()

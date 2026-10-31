@@ -36,6 +36,97 @@ final class AppsStore: ObservableObject {
     /// DEBUG snapshots keep every filesystem entry point inert, even from view tasks.
     private(set) var allowsLiveOperations = true
     private var sizeTask: Task<Void, Never>?
+    @Published private(set) var uninstallPlan: UninstallPlan?
+    @Published private(set) var uninstallScanning = false
+    @Published private(set) var uninstalling = false
+    @Published private(set) var uninstallProgress = 0
+    @Published private(set) var uninstallTotal = 0
+    @Published private(set) var uninstallResult: UninstallResult?
+    @Published private(set) var uninstallError: String?
+    private var uninstallScanTask: Task<Void, Never>?
+    private var uninstallScanID = UUID()
+
+    func prepareUninstall(_ app: ScannedApp) {
+        guard allowsLiveOperations, !uninstalling else { return }
+        cancelUninstallScan()
+        let scanID = UUID()
+        uninstallScanID = scanID
+        uninstallPlan = nil
+        uninstallResult = nil
+        uninstallError = nil
+        uninstallScanning = true
+        uninstallScanTask = Task {
+            let task = Task.detached(priority: .userInitiated) { AppUninstaller.scan(app: app) }
+            let plan = await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
+            guard !Task.isCancelled, self.uninstallScanID == scanID else { return }
+            self.uninstallPlan = plan
+            self.uninstallScanning = false
+        }
+    }
+
+    func cancelUninstallScan() {
+        guard allowsLiveOperations, !uninstalling else { return }
+        uninstallScanTask?.cancel()
+        uninstallScanID = UUID()
+        uninstallScanning = false
+    }
+
+    /// Includes embedded helpers and a different running copy with the same bundle ID.
+    static func runningInstances(of app: ScannedApp) -> [NSRunningApplication] {
+        NSWorkspace.shared.runningApplications.filter { running in
+            running.bundleIdentifier == app.bundleID || running.bundleURL.map {
+                $0.path == app.url.path || $0.path.hasPrefix(app.url.path + "/")
+            } == true || running.executableURL.map { $0.path.hasPrefix(app.url.path + "/") } == true
+        }
+    }
+
+    func uninstall(selected: Set<String>, dataConsent: Bool) async {
+        guard allowsLiveOperations, !uninstalling, !uninstallScanning,
+              let plan = uninstallPlan, plan.blockedReason == nil else { return }
+        guard selected.contains(plan.app.url.path),
+              !plan.items.contains(where: { selected.contains($0.id) && $0.requiresDataConsent && !dataConsent }) else {
+            uninstallError = "请包含应用本体，并确认所选应用数据可以移走。"
+            return
+        }
+        uninstalling = true
+        uninstallError = nil
+        uninstallProgress = 0
+        uninstallTotal = selected.count
+        defer { uninstalling = false }
+        // Graceful termination only. A save dialog or refusal stops the uninstall.
+        for running in Self.runningInstances(of: plan.app) where
+            running.bundleURL?.path == plan.app.url.path
+                || running.bundleURL?.path.hasPrefix(plan.app.url.path + "/") == true
+                || running.executableURL?.path.hasPrefix(plan.app.url.path + "/") == true {
+            _ = running.terminate()
+        }
+        let hasSelectedAgent = plan.items.contains { $0.kind == .agent && selected.contains($0.id) }
+        func waitingInstances() -> [NSRunningApplication] {
+            let instances = Self.runningInstances(of: plan.app)
+            // KeepAlive helpers are stopped by launchctl after the main app exits.
+            return hasSelectedAgent ? instances.filter {
+                $0.bundleIdentifier == plan.app.bundleID || $0.bundleURL?.path == plan.app.url.path
+            } : instances
+        }
+        let deadline = ProcessInfo.processInfo.systemUptime + 8
+        while !waitingInstances().isEmpty && ProcessInfo.processInfo.systemUptime < deadline {
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+        guard waitingInstances().isEmpty else {
+            uninstallError = "应用或内置辅助进程仍在运行。请完成保存并退出，然后重试。未移动任何文件。"
+            return
+        }
+        uninstallResult = await Task.detached(priority: .userInitiated) {
+            await AppUninstaller.perform(plan: plan, selected: selected, dataConsent: dataConsent,
+                isRunning: { await MainActor.run { !Self.runningInstances(of: plan.app).isEmpty } },
+                onProgress: { completed, total in
+                    self.uninstallProgress = completed
+                    self.uninstallTotal = total
+                })
+        }.value
+        // Invalidate the inventory and associated-file cache, while keeping the outcome.
+        refresh()
+    }
 
     init() {}
 
@@ -48,6 +139,9 @@ final class AppsStore: ObservableObject {
         var generation = 0
         var hasScanned = true
         var stopped = false
+        var uninstallPlan: UninstallPlan?
+        var uninstallResult: UninstallResult?
+        var uninstalling = false
     }
 
     convenience init(snapshot: Snapshot) {
@@ -56,7 +150,14 @@ final class AppsStore: ObservableObject {
             $0.url.standardizedFileURL.path.hasPrefix("/QiliPreview/")
                 && URL(fileURLWithPath: $0.id).standardizedFileURL.path.hasPrefix("/QiliPreview/")
         }, "Snapshot fixtures must use synthetic /QiliPreview paths")
+        precondition(snapshot.uninstallPlan?.items.allSatisfy { $0.id.hasPrefix("/QiliPreview/") } ?? true)
+        precondition(snapshot.uninstallPlan?.app.id.hasPrefix("/QiliPreview/") ?? true)
+        precondition(snapshot.uninstallResult?.outcomes.allSatisfy { $0.id.hasPrefix("/QiliPreview/") } ?? true)
+        precondition(snapshot.uninstallResult?.remaining.allSatisfy { $0.hasPrefix("/QiliPreview/") } ?? true)
         allowsLiveOperations = false
+        uninstallPlan = snapshot.uninstallPlan
+        uninstallResult = snapshot.uninstallResult
+        uninstalling = snapshot.uninstalling
         apps = snapshot.apps
         scanning = snapshot.scanning
         sizedCount = snapshot.sizedCount
